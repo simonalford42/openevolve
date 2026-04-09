@@ -84,6 +84,32 @@ def evaluate(program_path):
         self.assertIsNone(controller.executor)
         self.assertTrue(controller.shutdown_event.is_set())
 
+    def test_controller_force_stop_terminates_workers(self):
+        """Test forced shutdown path terminates lingering workers."""
+        controller = ProcessParallelController(self.config, self.eval_file, self.database)
+
+        proc_clean = MagicMock()
+        proc_clean.pid = 101
+        proc_clean.is_alive.side_effect = [True, False]
+
+        proc_stuck = MagicMock()
+        proc_stuck.pid = 202
+        proc_stuck.is_alive.side_effect = [True, True, False]
+
+        executor = MagicMock()
+        executor._processes = {101: proc_clean, 202: proc_stuck}
+        controller.executor = executor
+
+        controller.stop(force=True, grace_period=0.0)
+
+        executor.shutdown.assert_called_once_with(wait=False, cancel_futures=True)
+        proc_clean.terminate.assert_called_once()
+        proc_clean.kill.assert_not_called()
+        proc_stuck.terminate.assert_called_once()
+        proc_stuck.kill.assert_called_once()
+        self.assertIsNone(controller.executor)
+        self.assertTrue(controller.shutdown_event.is_set())
+
     def test_database_snapshot_creation(self):
         """Test creating database snapshot for workers"""
         controller = ProcessParallelController(self.config, self.eval_file, self.database)

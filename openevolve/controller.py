@@ -373,7 +373,8 @@ class OpenEvolve:
         finally:
             # Clean up parallel processing resources
             if self.parallel_controller:
-                self.parallel_controller.stop()
+                shutdown_requested = self.parallel_controller.shutdown_event.is_set()
+                self.parallel_controller.stop(force=shutdown_requested)
                 self.parallel_controller = None
 
             # Close evolution tracer

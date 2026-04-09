@@ -424,14 +424,57 @@ class ProcessParallelController:
         self.executor = ProcessPoolExecutor(**executor_kwargs)
         logger.info(f"Started process pool with {self.num_workers} processes")
 
-    def stop(self) -> None:
-        """Stop the process pool"""
+    def stop(self, force: bool = False, grace_period: float = 5.0) -> None:
+        """Stop the process pool.
+
+        Args:
+            force: When True, avoid waiting indefinitely for running workers.
+                Pending tasks are cancelled and workers are terminated after a
+                short grace period.
+            grace_period: Seconds to wait after terminate before escalating to
+                a hard kill when ``force`` is enabled.
+        """
         self.shutdown_event.set()
 
-        if self.executor:
-            self.executor.shutdown(wait=True)
-            self.executor = None
+        executor = self.executor
+        if executor is None:
+            logger.info("Stopped process pool")
+            return
 
+        if not force:
+            executor.shutdown(wait=True)
+            self.executor = None
+            logger.info("Stopped process pool")
+            return
+
+        processes = list(getattr(executor, "_processes", {}).values())
+        executor.shutdown(wait=False, cancel_futures=True)
+
+        deadline = time.time() + max(0.0, grace_period)
+        live_processes = []
+
+        for process in processes:
+            if process is None or not process.is_alive():
+                continue
+            process.terminate()
+            live_processes.append(process)
+
+        for process in live_processes:
+            remaining = max(0.0, deadline - time.time())
+            process.join(timeout=remaining)
+
+        for process in live_processes:
+            if not process.is_alive():
+                continue
+            pid = getattr(process, "pid", "unknown")
+            logger.warning(f"Worker process {pid} did not exit after {grace_period:.1f}s; killing")
+            if hasattr(process, "kill"):
+                process.kill()
+            else:
+                process.terminate()
+            process.join(timeout=1.0)
+
+        self.executor = None
         logger.info("Stopped process pool")
 
     def request_shutdown(self) -> None:
