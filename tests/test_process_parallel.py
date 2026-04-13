@@ -4,6 +4,7 @@ Tests for process-based parallel controller
 
 import asyncio
 import os
+import signal
 import tempfile
 import unittest
 from unittest.mock import Mock, patch, MagicMock
@@ -15,7 +16,7 @@ os.environ["OPENAI_API_KEY"] = "test"
 
 from openevolve.config import Config, DatabaseConfig, EvaluatorConfig, LLMConfig, PromptConfig
 from openevolve.database import Program, ProgramDatabase
-from openevolve.process_parallel import ProcessParallelController, SerializableResult
+from openevolve.process_parallel import ProcessParallelController, SerializableResult, _worker_init
 
 
 class TestProcessParallel(unittest.TestCase):
@@ -98,6 +99,8 @@ def evaluate(program_path):
 
         executor = MagicMock()
         executor._processes = {101: proc_clean, 202: proc_stuck}
+        executor._executor_manager_thread = None
+        executor._executor_manager_thread_wakeup = None
         controller.executor = executor
 
         controller.stop(force=True, grace_period=0.0)
@@ -109,6 +112,17 @@ def evaluate(program_path):
         proc_stuck.kill.assert_called_once()
         self.assertIsNone(controller.executor)
         self.assertTrue(controller.shutdown_event.is_set())
+
+    @patch("openevolve.process_parallel.signal.signal")
+    def test_worker_init_resets_signal_handlers(self, mock_signal):
+        """Workers should not inherit controller shutdown handlers."""
+        controller = ProcessParallelController(self.config, self.eval_file, self.database)
+        config_dict = controller._serialize_config(self.config)
+
+        _worker_init(config_dict, self.eval_file, {})
+
+        mock_signal.assert_any_call(signal.SIGINT, signal.SIG_IGN)
+        mock_signal.assert_any_call(signal.SIGTERM, signal.SIG_DFL)
 
     def test_database_snapshot_creation(self):
         """Test creating database snapshot for workers"""

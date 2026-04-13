@@ -187,6 +187,7 @@ class OpenEvolve:
 
         # Initialize improved parallel processing components
         self.parallel_controller = None
+        self.received_signal: Optional[int] = None
 
     def _setup_logging(self) -> None:
         """Set up logging"""
@@ -338,6 +339,8 @@ class OpenEvolve:
             # Set up signal handlers for graceful shutdown
             def signal_handler(signum, frame):
                 logger.info(f"Received signal {signum}, initiating graceful shutdown...")
+                if self.received_signal is None:
+                    self.received_signal = signum
                 self.parallel_controller.request_shutdown()
 
                 # Set up a secondary handler for immediate exit if user presses Ctrl+C again

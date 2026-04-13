@@ -7,12 +7,25 @@ import asyncio
 import logging
 import os
 import sys
+import threading
 from typing import Dict, List, Optional
 
 from openevolve import OpenEvolve
 from openevolve.config import Config, load_config
 
 logger = logging.getLogger(__name__)
+
+
+def _log_active_threads(phase: str) -> None:
+    """TEMP DEBUG: log active threads during signal-driven shutdown."""
+    threads = ", ".join(
+        f"{thread.name}(daemon={thread.daemon})" for thread in threading.enumerate()
+    )
+    logger.warning(
+        "TEMP EXIT DEBUG %s: active threads: %s. Remove after the signal-driven exit hang is fixed.",
+        phase,
+        threads or "<none>",
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -161,6 +174,16 @@ async def main_async() -> int:
             print(f"\nLatest checkpoint saved at: {latest_checkpoint}")
             print(f"To resume, use: --checkpoint {latest_checkpoint}")
 
+        shutdown_signal = getattr(openevolve, "received_signal", None)
+        if shutdown_signal is not None:
+            exit_code = 128 + shutdown_signal
+            logger.info(
+                "Signal-driven shutdown completed; returning exit code %s for signal %s",
+                exit_code,
+                shutdown_signal,
+            )
+            return exit_code
+
         return 0
 
     except Exception as e:
@@ -178,7 +201,34 @@ def main() -> int:
     Returns:
         Exit code
     """
-    return asyncio.run(main_async())
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    exit_code = 1
+
+    try:
+        exit_code = loop.run_until_complete(main_async())
+
+        # TEMP DEBUG: on signal-driven shutdown, skip the default executor
+        # shutdown path and hard-exit after flushing logs. This avoids the
+        # inner process hanging after it already logged completion.
+        if exit_code >= 128:
+            _log_active_threads("after main_async")
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        else:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.run_until_complete(loop.shutdown_default_executor())
+    finally:
+        asyncio.set_event_loop(None)
+        loop.close()
+
+    if exit_code >= 128:
+        _log_active_threads("before os._exit")
+        logging.shutdown()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(exit_code)
+
+    return exit_code
 
 
 if __name__ == "__main__":

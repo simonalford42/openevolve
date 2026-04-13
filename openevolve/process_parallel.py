@@ -39,10 +39,17 @@ class SerializableResult:
 def _worker_init(config_dict: dict, evaluation_file: str, parent_env: dict = None) -> None:
     """Initialize worker process with necessary components"""
     import os
+    import signal
 
     # Set environment from parent process
     if parent_env:
         os.environ.update(parent_env)
+
+    # Workers must not inherit the controller's SIGTERM/SIGINT handlers.
+    # If they do, parent-initiated worker shutdown flips the shared
+    # shutdown event and the main evolution loop exits early.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
     global _worker_config
     global _worker_evaluation_file
@@ -413,10 +420,10 @@ class ProcessParallelController:
         if sys.version_info >= (3, 11):
             logger.info(f"Set max {self.config.max_tasks_per_child} tasks per child")
             executor_kwargs["max_tasks_per_child"] = self.config.max_tasks_per_child
-        elif self.config.max_tasks_per_child is not None:
-            logger.warn(
-                "max_tasks_per_child is only supported in Python 3.11+. "
-                "Ignoring max_tasks_per_child and using spawn start method."
+        else:
+            logger.info(
+                "Using spawn start method for worker processes on Python < 3.11 "
+                "to avoid fork-related crashes in evaluation workers."
             )
             executor_kwargs["mp_context"] = mp.get_context("spawn")
 
@@ -448,6 +455,8 @@ class ProcessParallelController:
             return
 
         processes = list(getattr(executor, "_processes", {}).values())
+        manager_thread = getattr(executor, "_executor_manager_thread", None)
+        wakeup = getattr(executor, "_executor_manager_thread_wakeup", None)
         executor.shutdown(wait=False, cancel_futures=True)
 
         deadline = time.time() + max(0.0, grace_period)
@@ -473,6 +482,33 @@ class ProcessParallelController:
             else:
                 process.terminate()
             process.join(timeout=1.0)
+
+        if wakeup is not None:
+            try:
+                wakeup.wakeup()
+            except Exception:
+                pass
+
+        # TEMP DEBUG: after a forced stop, give ProcessPoolExecutor's helper
+        # threads a short window to unwind so they do not keep the interpreter
+        # alive after signal-driven shutdown. Remove this block once the
+        # signal-driven exit hang is fully understood.
+        if manager_thread is not None:
+            import threading
+
+            thread_deadline = time.time() + max(0.0, min(grace_period, 1.0))
+            while manager_thread.is_alive() and time.time() < thread_deadline:
+                time.sleep(0.05)
+
+            if manager_thread.is_alive():
+                active_threads = ", ".join(
+                    f"{thread.name}(daemon={thread.daemon})" for thread in threading.enumerate()
+                )
+                logger.warning(
+                    "ProcessPoolExecutor manager thread is still alive after forced shutdown. "
+                    "TEMP DEBUG: remove this warning after the shutdown hang root cause is fixed. "
+                    f"Active threads: {active_threads}"
+                )
 
         self.executor = None
         logger.info("Stopped process pool")
