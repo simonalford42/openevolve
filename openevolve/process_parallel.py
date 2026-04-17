@@ -489,26 +489,10 @@ class ProcessParallelController:
             except Exception:
                 pass
 
-        # TEMP DEBUG: after a forced stop, give ProcessPoolExecutor's helper
-        # threads a short window to unwind so they do not keep the interpreter
-        # alive after signal-driven shutdown. Remove this block once the
-        # signal-driven exit hang is fully understood.
         if manager_thread is not None:
-            import threading
-
             thread_deadline = time.time() + max(0.0, min(grace_period, 1.0))
             while manager_thread.is_alive() and time.time() < thread_deadline:
                 time.sleep(0.05)
-
-            if manager_thread.is_alive():
-                active_threads = ", ".join(
-                    f"{thread.name}(daemon={thread.daemon})" for thread in threading.enumerate()
-                )
-                logger.warning(
-                    "ProcessPoolExecutor manager thread is still alive after forced shutdown. "
-                    "TEMP DEBUG: remove this warning after the shutdown hang root cause is fixed. "
-                    f"Active threads: {active_threads}"
-                )
 
         self.executor = None
         logger.info("Stopped process pool")

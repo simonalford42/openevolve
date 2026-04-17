@@ -7,25 +7,12 @@ import asyncio
 import logging
 import os
 import sys
-import threading
 from typing import Dict, List, Optional
 
 from openevolve import OpenEvolve
 from openevolve.config import Config, load_config
 
 logger = logging.getLogger(__name__)
-
-
-def _log_active_threads(phase: str) -> None:
-    """TEMP DEBUG: log active threads during signal-driven shutdown."""
-    threads = ", ".join(
-        f"{thread.name}(daemon={thread.daemon})" for thread in threading.enumerate()
-    )
-    logger.warning(
-        "TEMP EXIT DEBUG %s: active threads: %s. Remove after the signal-driven exit hang is fixed.",
-        phase,
-        threads or "<none>",
-    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -208,11 +195,7 @@ def main() -> int:
     try:
         exit_code = loop.run_until_complete(main_async())
 
-        # TEMP DEBUG: on signal-driven shutdown, skip the default executor
-        # shutdown path and hard-exit after flushing logs. This avoids the
-        # inner process hanging after it already logged completion.
         if exit_code >= 128:
-            _log_active_threads("after main_async")
             loop.run_until_complete(loop.shutdown_asyncgens())
         else:
             loop.run_until_complete(loop.shutdown_asyncgens())
@@ -222,7 +205,6 @@ def main() -> int:
         loop.close()
 
     if exit_code >= 128:
-        _log_active_threads("before os._exit")
         logging.shutdown()
         sys.stdout.flush()
         sys.stderr.flush()
